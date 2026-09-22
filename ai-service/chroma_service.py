@@ -2,7 +2,7 @@ import os
 from typing import List, Dict, Any, Optional
 
 import chromadb
-from sentence_transformers import SentenceTransformer
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 from dotenv import load_dotenv
 
 
@@ -14,20 +14,14 @@ load_dotenv()
 
 
 # ============================================================
-# LOCAL EMBEDDING MODEL
+# CHROMA EMBEDDING FUNCTION
 # ============================================================
 
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+print("Loading ChromaDB default embedding function...")
 
-print(
-    f"Loading embedding model: {EMBEDDING_MODEL_NAME}"
-)
+embedding_model = DefaultEmbeddingFunction()
 
-embedding_model = SentenceTransformer(
-    EMBEDDING_MODEL_NAME
-)
-
-print("Embedding model loaded successfully.")
+print("ChromaDB embedding function initialized successfully.")
 
 
 # ============================================================
@@ -66,7 +60,7 @@ collection = chroma_client.get_or_create_collection(
 def create_embedding(text: str) -> List[float]:
     """
     Convert text into an embedding vector
-    using a local Sentence Transformer model.
+    using ChromaDB's default ONNX embedding function.
     """
 
     if not text or not text.strip():
@@ -74,12 +68,54 @@ def create_embedding(text: str) -> List[float]:
             "Text cannot be empty when creating an embedding"
         )
 
-    embedding = embedding_model.encode(
-        text.strip(),
-        normalize_embeddings=True,
+    embeddings = embedding_model(
+        [text.strip()]
     )
 
-    return embedding.tolist()
+    return [
+        float(value)
+        for value in embeddings[0]
+    ]
+
+
+# ============================================================
+# CREATE MULTIPLE EMBEDDINGS
+# ============================================================
+
+def create_embeddings(
+    texts: List[str],
+) -> List[List[float]]:
+    """
+    Convert multiple texts into embedding vectors.
+    """
+
+    if not texts:
+        raise ValueError(
+            "Texts list cannot be empty"
+        )
+
+    cleaned_texts = [
+        text.strip()
+        for text in texts
+    ]
+
+    for text in cleaned_texts:
+        if not text:
+            raise ValueError(
+                "Text cannot be empty when creating embeddings"
+            )
+
+    embeddings = embedding_model(
+        cleaned_texts
+    )
+
+    return [
+        [
+            float(value)
+            for value in embedding
+        ]
+        for embedding in embeddings
+    ]
 
 
 # ============================================================
@@ -159,10 +195,9 @@ def add_documents(
                 "Document text cannot be empty"
             )
 
-    embeddings = [
-        create_embedding(document)
-        for document in cleaned_documents
-    ]
+    embeddings = create_embeddings(
+        cleaned_documents
+    )
 
     collection.upsert(
         ids=ids,
@@ -206,7 +241,9 @@ def search_documents(
         collection_count,
     )
 
-    query_embedding = create_embedding(query)
+    query_embedding = create_embedding(
+        query
+    )
 
     query_arguments = {
         "query_embeddings": [query_embedding],
