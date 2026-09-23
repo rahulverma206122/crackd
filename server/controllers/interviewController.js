@@ -270,19 +270,19 @@ const createInterview = async (req, res) => {
       interview,
     });
 
-  } catch (error) {
-    console.error(
-      "Create interview error:",
-      error
-    );
+ } catch (error) {
+  console.error("====================================");
+  console.error("CREATE INTERVIEW ERROR");
+  console.error("Message:", error?.message);
+  console.error("Name:", error?.name);
+  console.error("Stack:", error?.stack);
+  console.error("====================================");
 
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to start interview",
-    });
-  }
+  return res.status(500).json({
+    success: false,
+    message: error?.message || "Failed to start interview",
+  });
+}
 };
 
 // ============================================================

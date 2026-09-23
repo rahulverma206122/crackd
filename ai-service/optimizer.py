@@ -1,31 +1,45 @@
 import os
+import json
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from schemas import ResumeOptimization
 
 
+# =========================
+# ENVIRONMENT
+# =========================
+
 load_dotenv()
 
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv(
-    "OPENAI_MODEL",
-    "gpt-5.6-luna"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
 )
 
 
-if not OPENAI_API_KEY:
+if not GEMINI_API_KEY:
     raise ValueError(
-        "OPENAI_API_KEY is not configured"
+        "GEMINI_API_KEY is not configured"
     )
 
 
-client = OpenAI(
-    api_key=OPENAI_API_KEY
+# =========================
+# GEMINI CLIENT
+# =========================
+
+client = genai.Client(
+    api_key=GEMINI_API_KEY
 )
 
+
+# =========================
+# SYSTEM PROMPT
+# =========================
 
 SYSTEM_PROMPT = """
 You are an expert resume optimization assistant.
@@ -89,21 +103,73 @@ The final output must be structured according to the provided schema.
 """
 
 
+# =========================
+# GEMINI STRUCTURED RESPONSE
+# =========================
+
+def _generate_structured_response(
+    system_prompt: str,
+    user_prompt: str,
+    response_schema,
+):
+    """
+    Generate a structured response from Gemini using
+    the supplied Pydantic schema.
+    """
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            response_mime_type="application/json",
+            response_schema=response_schema,
+            temperature=0.2,
+        ),
+    )
+
+    # Gemini may directly return a parsed Pydantic object
+    parsed = getattr(response, "parsed", None)
+
+    if parsed is not None:
+        return parsed
+
+    # Fallback: manually parse Gemini's JSON response
+    response_text = getattr(response, "text", None)
+
+    if not response_text:
+        raise RuntimeError(
+            "Gemini returned an empty response"
+        )
+
+    try:
+        return response_schema.model_validate_json(
+            response_text
+        )
+
+    except Exception:
+        try:
+            data = json.loads(response_text)
+
+            return response_schema.model_validate(
+                data
+            )
+
+        except Exception as exc:
+            raise RuntimeError(
+                f"Gemini returned invalid structured output: {exc}"
+            ) from exc
+
+
+# =========================
+# RESUME OPTIMIZATION
+# =========================
+
 def optimize_resume(
     resume_text: str,
     job_description: str
 ):
-    response = client.responses.parse(
-        model=OPENAI_MODEL,
-
-        input=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": f"""
+    user_prompt = f"""
 CANDIDATE RESUME:
 
 {resume_text}
@@ -132,11 +198,10 @@ Also provide:
 1. Keywords that can truthfully be added.
 2. Important keywords that are not supported by the resume.
 3. Only important ATS improvements.
-""",
-            },
-        ],
+"""
 
-        text_format=ResumeOptimization,
+    return _generate_structured_response(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_schema=ResumeOptimization,
     )
-
-    return response.output_parsed

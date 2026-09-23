@@ -21,6 +21,7 @@ from rag_service import (
     retrieve_ai_context,
 )
 
+
 # ============================================================
 # LANGGRAPH
 # ============================================================
@@ -31,10 +32,15 @@ from graph.interview_graph import (
     run_next_interview_batch,
 )
 
+
+# ============================================================
+# GEMINI
+# ============================================================
+
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 
 
 # ============================================================
@@ -43,15 +49,16 @@ from openai import OpenAI
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not OPENAI_API_KEY:
+if not GEMINI_API_KEY:
     raise ValueError(
-        "OPENAI_API_KEY is not configured"
+        "GEMINI_API_KEY is not configured"
     )
 
-openai_client = OpenAI(
-    api_key=OPENAI_API_KEY
+
+gemini_client = genai.Client(
+    api_key=GEMINI_API_KEY
 )
 
 
@@ -463,22 +470,27 @@ def graph_interview_start(
 
         return {
             "success": True,
+
             "questions": result.get(
                 "questions",
                 [],
             ),
+
             "rag_context": result.get(
                 "rag_context",
                 "",
             ),
+
             "resume_context": result.get(
                 "resume_context",
                 "",
             ),
+
             "job_description_context": result.get(
                 "job_description_context",
                 "",
             ),
+
             "total_questions": result.get(
                 "total_questions",
                 0,
@@ -536,22 +548,27 @@ def graph_interview_answer(
 
         return {
             "success": True,
+
             "evaluation": result.get(
                 "evaluation",
                 {},
             ),
+
             "score": result.get(
                 "score",
                 0,
             ),
+
             "answer_match": result.get(
                 "answer_match",
                 False,
             ),
+
             "correct_answer": result.get(
                 "correct_answer",
                 "",
             ),
+
             "current_difficulty": result.get(
                 "current_difficulty",
                 "medium",
@@ -609,14 +626,17 @@ def graph_interview_next_batch(
 
         return {
             "success": True,
+
             "questions": result.get(
                 "questions",
                 [],
             ),
+
             "current_difficulty": result.get(
                 "current_difficulty",
                 "medium",
             ),
+
             "total_questions": result.get(
                 "total_questions",
                 0,
@@ -674,37 +694,36 @@ async def transcribe_audio(
         )
 
         # ----------------------------------------------------
-        # OPENAI TRANSCRIPTION
+        # GEMINI TRANSCRIPTION
         # ----------------------------------------------------
 
-        transcription = (
-            openai_client.audio.transcriptions.create(
-                model="gpt-4o-transcribe",
+        audio_part = genai.types.Part.from_bytes(
+            data=audio_bytes,
+            mime_type=file.content_type or "audio/webm",
+        )
 
-                file=(
-                    file.filename
-                    or "answer.webm",
-
-                    audio_bytes,
-
-                    file.content_type
-                    or "audio/webm",
-                ),
-            )
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-transcribe",
+            contents=[
+                "Generate an accurate transcript of the speech. "
+                "Return only the spoken words as text. "
+                "Do not summarize, explain, or add commentary.",
+                audio_part,
+            ],
         )
 
         # ----------------------------------------------------
         # EXTRACT TRANSCRIBED TEXT
         # ----------------------------------------------------
 
-        text = (
-            transcription.text
-            if hasattr(
-                transcription,
-                "text"
-            )
-            else str(transcription)
+        text = getattr(
+            response,
+            "text",
+            None,
         )
+
+        if text is None:
+            text = ""
 
         text = text.strip()
 

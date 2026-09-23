@@ -1,4 +1,5 @@
 import re
+
 from typing import List, Dict, Any
 
 
@@ -18,8 +19,12 @@ def clean_text(text: str) -> str:
     text = text.replace("\r\n", "\n")
     text = text.replace("\r", "\n")
 
-    # Remove excessive spaces
+    # Normalize tabs and excessive spaces
     text = re.sub(r"[ \t]+", " ", text)
+
+    # Remove spaces from the beginning/end of each line
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
 
     # Remove excessive blank lines
     text = re.sub(r"\n\s*\n+", "\n\n", text)
@@ -138,13 +143,33 @@ def prepare_document(
     job description for vector storage.
     """
 
+    if not source_id:
+        raise ValueError(
+            "source_id is required"
+        )
+
+    if not source_type:
+        raise ValueError(
+            "source_type is required"
+        )
+
     cleaned_text = clean_text(text)
+
+    if not cleaned_text:
+        raise ValueError(
+            "Document text cannot be empty"
+        )
 
     chunks = chunk_text(
         cleaned_text,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
+
+    if not chunks:
+        raise ValueError(
+            "No usable chunks were created from the document"
+        )
 
     metadata = create_chunk_metadata(
         source_id=source_id,

@@ -1,6 +1,8 @@
 import os
+import json
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from schemas import (
     InterviewStartResponse,
@@ -17,20 +19,64 @@ from rag_service import retrieve_ai_context
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv(
-    "OPENAI_MODEL",
-    "gpt-5.6-luna"
-)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-if not OPENAI_API_KEY:
-    raise ValueError(
-        "OPENAI_API_KEY is not configured"
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY is not configured")
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+# ============================================================
+# GEMINI STRUCTURED OUTPUT HELPER
+# ============================================================
+
+def _generate_structured_response(
+    system_prompt: str,
+    user_prompt: str,
+    response_schema,
+):
+    """Generate and validate a structured Gemini response."""
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            response_mime_type="application/json",
+            response_schema=response_schema,
+            temperature=0.7,
+        ),
     )
 
-client = OpenAI(
-    api_key=OPENAI_API_KEY
-)
+    parsed = getattr(response, "parsed", None)
+
+    if parsed is not None:
+        return parsed
+
+    response_text = getattr(response, "text", None)
+
+    if not response_text:
+        raise ValueError(
+            "Gemini returned an empty response."
+        )
+
+    try:
+        return response_schema.model_validate_json(
+            response_text
+        )
+
+    except Exception:
+        try:
+            return response_schema.model_validate(
+                json.loads(response_text)
+            )
+
+        except Exception as error:
+            raise ValueError(
+                f"Failed to parse Gemini structured response: {error}"
+            ) from error
 
 
 # ============================================================
@@ -811,6 +857,7 @@ def _format_previous_questions(
 def _format_previous_performance(
     previous_performance: list | None
 ) -> str:
+
     if not previous_performance:
         return "No previous answer performance is available."
 
@@ -856,6 +903,7 @@ def _retrieve_interview_rag_context(
     n_results: int = 6,
 ) -> str:
     """Retrieve source-filtered resume/JD context from ChromaDB."""
+
     if not query or not query.strip():
         return "No RAG context was retrieved."
 
@@ -863,27 +911,61 @@ def _retrieve_interview_rag_context(
 
     try:
         if resume_source_id:
-            value = retrieve_ai_context(
-                query=query, n_results=n_results,
-                source_id=resume_source_id, source_type="resume"
+            rag_result = retrieve_ai_context(
+                query=query,
+                n_results=n_results,
+                source_id=resume_source_id,
+                source_type="resume",
             )
+
+            value = (
+                rag_result.get("context", "")
+                if isinstance(rag_result, dict)
+                else str(rag_result or "")
+            )
+
             if value and value.strip():
-                contexts.append("RELEVANT RESUME CONTEXT:\n" + value.strip())
+                contexts.append(
+                    "RELEVANT RESUME CONTEXT:\n"
+                    + value.strip()
+                )
+
     except Exception as error:
-        print(f"RAG resume retrieval warning: {error}")
+        print(
+            f"RAG resume retrieval warning: {error}"
+        )
 
     try:
         if job_description_source_id:
-            value = retrieve_ai_context(
-                query=query, n_results=n_results,
-                source_id=job_description_source_id, source_type="job_description"
+            rag_result = retrieve_ai_context(
+                query=query,
+                n_results=n_results,
+                source_id=job_description_source_id,
+                source_type="job_description",
             )
-            if value and value.strip():
-                contexts.append("RELEVANT JOB DESCRIPTION CONTEXT:\n" + value.strip())
-    except Exception as error:
-        print(f"RAG job-description retrieval warning: {error}")
 
-    return "\n\n".join(contexts) if contexts else "No RAG context was retrieved for this request."
+            value = (
+                rag_result.get("context", "")
+                if isinstance(rag_result, dict)
+                else str(rag_result or "")
+            )
+
+            if value and value.strip():
+                contexts.append(
+                    "RELEVANT JOB DESCRIPTION CONTEXT:\n"
+                    + value.strip()
+                )
+
+    except Exception as error:
+        print(
+            f"RAG job-description retrieval warning: {error}"
+        )
+
+    return (
+        "\n\n".join(contexts)
+        if contexts
+        else "No RAG context was retrieved for this request."
+    )
 
 
 # ============================================================
@@ -923,19 +1005,9 @@ def start_interview(
         job_description_source_id=job_description_source_id,
     )
 
-    response = client.responses.parse(
-        model=OPENAI_MODEL,
-
-        input=[
-            {
-                "role": "system",
-                "content":
-                    INTERVIEWER_SYSTEM_PROMPT,
-            },
-
-            {
-                "role": "user",
-                "content": f"""
+    response = _generate_structured_response(
+        system_prompt=INTERVIEWER_SYSTEM_PROMPT,
+        user_prompt=f"""
 CANDIDATE RESUME:
 
 {resume_text}
@@ -1030,13 +1102,10 @@ mix of EASY and HARD questions when supported by the resume.
 
 Do not provide answers.
 """,
-            },
-        ],
-
-        text_format=InterviewStartResponse,
+        response_schema=InterviewStartResponse,
     )
 
-    return response.output_parsed
+    return response
 
 
 # ============================================================
@@ -1092,19 +1161,9 @@ def generate_next_batch(
         job_description_source_id=job_description_source_id,
     )
 
-    response = client.responses.parse(
-        model=OPENAI_MODEL,
-
-        input=[
-            {
-                "role": "system",
-                "content":
-                    INTERVIEWER_SYSTEM_PROMPT,
-            },
-
-            {
-                "role": "user",
-                "content": f"""
+    response = _generate_structured_response(
+        system_prompt=INTERVIEWER_SYSTEM_PROMPT,
+        user_prompt=f"""
 CANDIDATE RESUME:
 
 {resume_text}
@@ -1212,13 +1271,10 @@ Return exactly 10 questions.
 
 Do not provide answers.
 """,
-            },
-        ],
-
-        text_format=InterviewBatchResponse,
+        response_schema=InterviewBatchResponse,
     )
 
-    return response.output_parsed
+    return response
 
 
 # ============================================================
@@ -1267,24 +1323,17 @@ def evaluate_answer(
     )
 
     rag_context = _retrieve_interview_rag_context(
-        query=f"Evaluate this candidate answer for this interview question: {question}",
+        query=(
+            f"Evaluate this candidate answer for this interview question: "
+            f"{question}"
+        ),
         resume_source_id=resume_source_id,
         job_description_source_id=job_description_source_id,
     )
 
-    response = client.responses.parse(
-        model=OPENAI_MODEL,
-
-        input=[
-            {
-                "role": "system",
-                "content":
-                    INTERVIEWER_SYSTEM_PROMPT,
-            },
-
-            {
-                "role": "user",
-                "content": f"""
+    response = _generate_structured_response(
+        system_prompt=INTERVIEWER_SYSTEM_PROMPT,
+        user_prompt=f"""
 CANDIDATE RESUME:
 
 {resume_text}
@@ -1447,10 +1496,7 @@ Do not return any additional claim-verification field.
 
 Only return the evaluation.
 """,
-            },
-        ],
-
-        text_format=InterviewAnswerResponse,
+        response_schema=InterviewAnswerResponse,
     )
 
-    return response.output_parsed
+    return response

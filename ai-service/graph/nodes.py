@@ -1,5 +1,3 @@
-from typing import Any
-
 from interviewer import (
     start_interview,
     generate_next_batch,
@@ -236,10 +234,19 @@ def evaluate_answer_node(state: dict) -> dict:
             0,
         )
 
-        answer_match = evaluation.get(
-            "answer_match",
-            False,
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # InterviewEvaluation uses
+        # answer_match_percentage, not answer_match.
+        # ----------------------------------------------------
+
+        answer_match_percentage = evaluation.get(
+            "answer_match_percentage",
+            0,
         )
+
+        if not isinstance(answer_match_percentage, (int, float)):
+            answer_match_percentage = 0
 
         correct_answer = evaluation.get(
             "correct_answer",
@@ -248,8 +255,6 @@ def evaluate_answer_node(state: dict) -> dict:
 
         # ----------------------------------------------------
         # Add the current answer's performance to history.
-        # This allows the next difficulty calculation to use
-        # the latest answer as well.
         # ----------------------------------------------------
 
         previous_performance = list(
@@ -261,7 +266,7 @@ def evaluate_answer_node(state: dict) -> dict:
 
         current_performance = {
             "score": score,
-            "answer_match": answer_match,
+            "answer_match_percentage": answer_match_percentage,
         }
 
         updated_performance = (
@@ -272,7 +277,7 @@ def evaluate_answer_node(state: dict) -> dict:
         return {
             "evaluation": evaluation,
             "score": score,
-            "answer_match": answer_match,
+            "answer_match_percentage": answer_match_percentage,
             "correct_answer": correct_answer,
             "previous_performance": updated_performance,
             "error": None,
@@ -287,7 +292,7 @@ def evaluate_answer_node(state: dict) -> dict:
         return {
             "evaluation": {},
             "score": 0,
-            "answer_match": False,
+            "answer_match_percentage": 0,
             "correct_answer": "",
             "error": str(error),
         }

@@ -1,23 +1,36 @@
 import os
+import json
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from schemas import ResumeAnalysis
 
 
 load_dotenv()
 
-api_key = os.getenv("OPENAI_API_KEY")
-model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 
-if not api_key:
+# =========================
+# GEMINI CONFIGURATION
+# =========================
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+
+if not GEMINI_API_KEY:
     raise RuntimeError(
-        "OPENAI_API_KEY is missing from environment variables"
+        "GEMINI_API_KEY is missing from environment variables"
     )
 
-client = OpenAI(api_key=api_key)
 
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+# =========================
+# SYSTEM PROMPT
+# =========================
 
 SYSTEM_PROMPT = """
 You are an expert ATS and technical recruiting analyst.
@@ -69,7 +82,67 @@ Return a structured analysis.
 """
 
 
-def analyze_resume(resume_text: str, job_description: str) -> ResumeAnalysis:
+# =========================
+# GEMINI STRUCTURED RESPONSE
+# =========================
+
+def _generate_structured_response(
+    system_prompt: str,
+    user_prompt: str,
+    response_schema,
+):
+    """
+    Generate a structured response from Gemini using
+    the supplied Pydantic schema.
+    """
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            response_mime_type="application/json",
+            response_schema=response_schema,
+            temperature=0.2,
+        ),
+    )
+
+    # Gemini SDK may directly return a parsed Pydantic object
+    parsed = getattr(response, "parsed", None)
+
+    if parsed is not None:
+        return parsed
+
+    # Fallback: manually parse Gemini's JSON response
+    response_text = getattr(response, "text", None)
+
+    if not response_text:
+        raise RuntimeError(
+            "Gemini returned an empty response"
+        )
+
+    try:
+        return response_schema.model_validate_json(response_text)
+
+    except Exception:
+        try:
+            data = json.loads(response_text)
+            return response_schema.model_validate(data)
+
+        except Exception as exc:
+            raise RuntimeError(
+                f"Gemini returned invalid structured output: {exc}"
+            ) from exc
+
+
+# =========================
+# RESUME ANALYSIS
+# =========================
+
+def analyze_resume(
+    resume_text: str,
+    job_description: str
+) -> ResumeAnalysis:
 
     user_prompt = f"""
 Analyze the following candidate resume against the job description.
@@ -107,32 +180,8 @@ Provide:
 Base every conclusion only on the supplied resume and job description.
 """
 
-    response = client.responses.parse(
-        model=model,
-        input=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ],
-        text_format=ResumeAnalysis,
-    )
-
-    for output in response.output:
-        if output.type != "message":
-            continue
-
-        for content in output.content:
-            if content.type != "output_text":
-                continue
-
-            if content.parsed:
-                return content.parsed
-
-    raise RuntimeError(
-        "OpenAI returned no structured analysis"
+    return _generate_structured_response(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_schema=ResumeAnalysis,
     )

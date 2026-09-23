@@ -47,7 +47,7 @@ class InterviewState(TypedDict, total=False):
     # ---------------------------------------------------------
 
     score: int
-    answer_match: bool
+    answer_match_percentage: int
     correct_answer: str
 
     # ---------------------------------------------------------
