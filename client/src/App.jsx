@@ -194,17 +194,21 @@ function App() {
         path="/"
         element={
           <Navigate
-            to="/dashboard"
+            to="/login"
             replace
           />
         }
       />
 
+      {/* ================================================== */}
+      {/* UNKNOWN ROUTES */}
+      {/* ================================================== */}
+
       <Route
         path="*"
         element={
           <Navigate
-            to="/dashboard"
+            to="/login"
             replace
           />
         }
