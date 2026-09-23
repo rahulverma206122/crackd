@@ -163,6 +163,14 @@ export default function Interview() {
   const audioChunksRef = useRef([]);
   const isListeningRef = useRef(false);
 
+  // Browser live speech recognition. This updates the textarea
+  // while the user is speaking instead of waiting for recording to stop.
+  const speechRecognitionRef = useRef(null);
+  const speechRecognitionSupportedRef = useRef(false);
+  const voiceBaseAnswerRef = useRef("");
+  const speechFinalTextRef = useRef("");
+  const speechInterimTextRef = useRef("");
+
   // ============================================================
   // BROWSER SUPPORT
   // ============================================================
@@ -177,6 +185,16 @@ export default function Interview() {
     "MediaRecorder" in window &&
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia;
+
+  const speechRecognitionSupported =
+    typeof window !== "undefined" &&
+    !!(
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition
+    );
+
+  speechRecognitionSupportedRef.current =
+    speechRecognitionSupported;
 
   // ============================================================
   // CURRENT QUESTION
@@ -291,6 +309,22 @@ export default function Interview() {
       }
 
       isListeningRef.current = false;
+
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.onresult = null;
+          speechRecognitionRef.current.onerror = null;
+          speechRecognitionRef.current.onend = null;
+          speechRecognitionRef.current.stop();
+        } catch (err) {
+          console.log("SpeechRecognition cleanup:", err);
+        }
+      }
+
+      speechRecognitionRef.current = null;
+      speechFinalTextRef.current = "";
+      speechInterimTextRef.current = "";
+      voiceBaseAnswerRef.current = "";
 
       if (mediaRecorderRef.current) {
         try {
@@ -456,13 +490,11 @@ export default function Interview() {
   ]);
 
   // ============================================================
-  // AUDIO RECORDING
+  // AUDIO RECORDING + LIVE SPEECH-TO-TEXT
   // ============================================================
 
   const getSupportedAudioMimeType = () => {
-    if (
-      typeof MediaRecorder === "undefined"
-    ) {
+    if (typeof MediaRecorder === "undefined") {
       return "";
     }
 
@@ -479,19 +511,192 @@ export default function Interview() {
     );
   };
 
-  const appendTranscriptionToAnswer = (
+  const updateLiveSpeechText = () => {
+    setAnswer(
+      composeAnswer(
+        voiceBaseAnswerRef.current,
+        speechFinalTextRef.current,
+        speechInterimTextRef.current
+      )
+    );
+  };
+
+  const startSpeechRecognition = () => {
+    if (!speechRecognitionSupported) {
+      return false;
+    }
+
+    const SpeechRecognitionAPI =
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition;
+
+    if (!SpeechRecognitionAPI) {
+      return false;
+    }
+
+    try {
+      const recognition = new SpeechRecognitionAPI();
+
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-IN";
+      recognition.maxAlternatives = 1;
+
+      speechRecognitionRef.current = recognition;
+      speechFinalTextRef.current = "";
+      speechInterimTextRef.current = "";
+
+      recognition.onstart = () => {
+        if (!isListeningRef.current) return;
+
+        setMicStatus(
+          "Listening... your words will appear live in the answer box."
+        );
+      };
+
+      recognition.onresult = (event) => {
+        let finalText = speechFinalTextRef.current;
+        let interimText = "";
+
+        for (
+          let index = event.resultIndex;
+          index < event.results.length;
+          index += 1
+        ) {
+          const result = event.results[index];
+          const transcript =
+            result?.[0]?.transcript || "";
+
+          if (result.isFinal) {
+            finalText = composeAnswer(
+              finalText,
+              transcript,
+              ""
+            );
+          } else {
+            interimText = composeAnswer(
+              interimText,
+              transcript,
+              ""
+            );
+          }
+        }
+
+        speechFinalTextRef.current = finalText;
+        speechInterimTextRef.current = interimText;
+
+        updateLiveSpeechText();
+      };
+
+      recognition.onerror = (event) => {
+        console.warn(
+          "SpeechRecognition error:",
+          event?.error
+        );
+
+        if (
+          event?.error === "not-allowed" ||
+          event?.error === "service-not-allowed"
+        ) {
+          setMicStatus(
+            "Live speech-to-text permission is unavailable. Your audio is still being recorded and will be transcribed after you stop."
+          );
+          return;
+        }
+
+        if (
+          event?.error !== "no-speech" &&
+          event?.error !== "aborted"
+        ) {
+          setMicStatus(
+            "Live transcription paused. Your audio is still being recorded."
+          );
+        }
+      };
+
+      recognition.onend = () => {
+        if (
+          !isListeningRef.current ||
+          !speechRecognitionSupportedRef.current
+        ) {
+          return;
+        }
+
+        // Chrome/mobile browsers can stop recognition automatically.
+        // Restart it while MediaRecorder keeps recording.
+        setTimeout(() => {
+          if (!isListeningRef.current) return;
+
+          try {
+            recognition.start();
+          } catch (err) {
+            // InvalidStateError simply means recognition is already running.
+            console.log(
+              "SpeechRecognition restart:",
+              err
+            );
+          }
+        }, 150);
+      };
+
+      recognition.start();
+      return true;
+    } catch (err) {
+      console.warn(
+        "Live SpeechRecognition could not start:",
+        err
+      );
+
+      speechRecognitionRef.current = null;
+      return false;
+    }
+  };
+
+  const stopSpeechRecognition = () => {
+    const recognition = speechRecognitionRef.current;
+
+    speechRecognitionRef.current = null;
+
+    if (!recognition) return;
+
+    try {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.stop();
+    } catch (err) {
+      console.log(
+        "SpeechRecognition stop:",
+        err
+      );
+    }
+  };
+
+  const replaceAnswerWithFinalTranscript = (
     transcript
   ) => {
-    const cleanTranscript =
-      String(transcript || "").trim();
+    const cleanTranscript = String(
+      transcript || ""
+    ).trim();
 
-    if (!cleanTranscript) return;
+    if (cleanTranscript) {
+      setAnswer(
+        composeAnswer(
+          voiceBaseAnswerRef.current,
+          cleanTranscript,
+          ""
+        )
+      );
+      return;
+    }
 
-    setAnswer((previousAnswer) =>
+    // If Gemini does not return text, keep the browser's
+    // live transcript instead of losing the user's answer.
+    setAnswer(
       composeAnswer(
-        previousAnswer,
-        cleanTranscript,
-        ""
+        voiceBaseAnswerRef.current,
+        speechFinalTextRef.current,
+        speechInterimTextRef.current
       )
     );
   };
@@ -521,10 +726,20 @@ export default function Interview() {
 
     stopSpeaking();
 
+    // Preserve any text that was already typed before the microphone started.
+    voiceBaseAnswerRef.current = answer.trim();
+    speechFinalTextRef.current = "";
+    speechInterimTextRef.current = "";
+
     try {
       const stream =
         await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+          },
         });
 
       const mimeType =
@@ -543,7 +758,9 @@ export default function Interview() {
 
       setIsListening(true);
       setMicStatus(
-        "Recording... speak your answer now."
+        speechRecognitionSupported
+          ? "Starting live transcription... speak your answer now."
+          : "Recording... speak your answer now."
       );
 
       recorder.ondataavailable = (event) => {
@@ -568,6 +785,8 @@ export default function Interview() {
         setIsTranscribing(false);
         setMicStatus("");
 
+        stopSpeechRecognition();
+
         if (mediaStreamRef.current) {
           mediaStreamRef.current
             .getTracks()
@@ -584,6 +803,9 @@ export default function Interview() {
       };
 
       recorder.onstop = async () => {
+        // Stop live browser recognition first, but keep its final text in refs.
+        stopSpeechRecognition();
+
         const chunks = [
           ...audioChunksRef.current,
         ];
@@ -620,7 +842,7 @@ export default function Interview() {
 
         setIsTranscribing(true);
         setMicStatus(
-          "Transcribing your answer with AI..."
+          "Finishing AI transcription..."
         );
 
         try {
@@ -636,37 +858,76 @@ export default function Interview() {
             response?.data?.text ||
             "";
 
-          if (!String(transcript).trim()) {
-            throw new Error(
-              "No speech was detected in the recording."
+          if (String(transcript).trim()) {
+            // Gemini gives the clean final transcript. Replace the live
+            // browser text with it so the submitted answer is cleaner.
+            replaceAnswerWithFinalTranscript(
+              transcript
             );
+
+            setMicStatus(
+              "Voice answer ready. You can review it before submitting."
+            );
+          } else {
+            replaceAnswerWithFinalTranscript("");
+
+            if (speechFinalTextRef.current.trim()) {
+              setMicStatus(
+                "Live transcript kept in the answer box."
+              );
+            } else {
+              throw new Error(
+                "No speech was detected in the recording."
+              );
+            }
           }
-
-          appendTranscriptionToAnswer(
-            transcript
-          );
-
-          setMicStatus(
-            "Voice answer added to the text box."
-          );
         } catch (err) {
           console.error(
             "Audio transcription error:",
             err
           );
 
-          setError(
-            err?.message ||
-              "Failed to transcribe your voice. Please try recording again."
+          // Do not erase the live browser transcript if AI cleanup fails.
+          const fallbackAnswer = composeAnswer(
+            voiceBaseAnswerRef.current,
+            speechFinalTextRef.current,
+            speechInterimTextRef.current
           );
 
-          setMicStatus("");
+          if (fallbackAnswer.trim()) {
+            setAnswer(fallbackAnswer);
+            setMicStatus(
+              "AI cleanup failed, but your live transcript was kept."
+            );
+            setError(
+              "AI transcription could not finish, but your live transcript is still available."
+            );
+          } else {
+            setError(
+              err?.message ||
+                "Failed to transcribe your voice. Please try recording again."
+            );
+            setMicStatus("");
+          }
         } finally {
           setIsTranscribing(false);
+
+          // These refs are only for the current voice capture.
+          voiceBaseAnswerRef.current = "";
+          speechFinalTextRef.current = "";
+          speechInterimTextRef.current = "";
         }
       };
 
       recorder.start(250);
+
+      // Start live browser STT at the same time as MediaRecorder.
+      // MediaRecorder remains the reliable audio source for Gemini fallback.
+      if (!startSpeechRecognition()) {
+        setMicStatus(
+          "Recording... live browser transcription is unavailable; AI transcription will run when you stop."
+        );
+      }
     } catch (err) {
       console.error(
         "Microphone start error:",
@@ -678,6 +939,8 @@ export default function Interview() {
       setIsTranscribing(false);
       setMicStatus("");
 
+      stopSpeechRecognition();
+
       if (mediaStreamRef.current) {
         mediaStreamRef.current
           .getTracks()
@@ -688,12 +951,16 @@ export default function Interview() {
       mediaRecorderRef.current = null;
       audioChunksRef.current = [];
 
+      voiceBaseAnswerRef.current = "";
+      speechFinalTextRef.current = "";
+      speechInterimTextRef.current = "";
+
       if (
         err?.name ===
         "NotAllowedError"
       ) {
         setError(
-          "Microphone permission was denied. Allow microphone access for localhost in your browser and try again."
+          "Microphone permission was denied. Allow microphone access for this site in your browser and try again."
         );
       } else if (
         err?.name ===
@@ -712,6 +979,8 @@ export default function Interview() {
   };
 
   const stopListening = () => {
+    stopSpeechRecognition();
+
     if (!mediaRecorderRef.current) {
       isListeningRef.current = false;
       setIsListening(false);
@@ -933,6 +1202,9 @@ export default function Interview() {
 
         setCurrentQuestionIndex(0);
         setAnswer("");
+        voiceBaseAnswerRef.current = "";
+        speechFinalTextRef.current = "";
+        speechInterimTextRef.current = "";
         setEvaluation(null);
         setSpokenQuestion("");
 
@@ -1084,6 +1356,9 @@ export default function Interview() {
 
     setEvaluation(null);
     setAnswer("");
+    voiceBaseAnswerRef.current = "";
+    speechFinalTextRef.current = "";
+    speechInterimTextRef.current = "";
     setError("");
     setSuccess("");
     setSpokenQuestion("");
@@ -1171,6 +1446,9 @@ export default function Interview() {
         }
 
         setAnswer("");
+        voiceBaseAnswerRef.current = "";
+        speechFinalTextRef.current = "";
+        speechInterimTextRef.current = "";
         setEvaluation(null);
         setSpokenQuestion("");
 
@@ -1636,7 +1914,8 @@ export default function Interview() {
                   }}
                   disabled={
                     submittingAnswer ||
-                    currentQuestionAnswered
+                    currentQuestionAnswered ||
+                    isListening
                   }
                   placeholder="Type your answer or use the microphone..."
                   rows={6}
