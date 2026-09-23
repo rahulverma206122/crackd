@@ -3,6 +3,32 @@ const AI_SERVICE_URL =
   "http://localhost:8000";
 
 // ============================================================
+// AI SERVICE REQUEST CONFIGURATION
+// ============================================================
+
+const MAX_RETRIES = 4;
+
+// Render Free services can take some time to wake up.
+// These delays give the AI service enough time to start.
+const RETRY_DELAYS = [
+  5000,
+  10000,
+  15000,
+  20000,
+];
+
+const REQUEST_TIMEOUT = 90000;
+
+// ============================================================
+// HELPER - SLEEP
+// ============================================================
+
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+// ============================================================
 // HELPER - PARSE AI SERVICE RESPONSE
 // ============================================================
 
@@ -23,6 +49,154 @@ const parseResponse = async (response) => {
 };
 
 // ============================================================
+// HELPER - CHECK WHETHER ERROR SHOULD BE RETRIED
+// ============================================================
+
+const shouldRetryStatus = (status) => {
+  return (
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+};
+
+// ============================================================
+// HELPER - FETCH AI SERVICE WITH RETRIES
+// ============================================================
+
+const fetchAIService = async (
+  path,
+  requestFactory
+) => {
+  let lastError = null;
+
+  for (
+    let attempt = 0;
+    attempt <= MAX_RETRIES;
+    attempt++
+  ) {
+    try {
+      const controller =
+        new AbortController();
+
+      const timeout = setTimeout(() => {
+        controller.abort();
+      }, REQUEST_TIMEOUT);
+
+      let response;
+
+      try {
+        response = await fetch(
+          `${AI_SERVICE_URL}${path}`,
+          {
+            ...requestFactory(),
+            signal: controller.signal,
+          }
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      // --------------------------------------------------------
+      // SUCCESS
+      // --------------------------------------------------------
+
+      if (response.ok) {
+        return response;
+      }
+
+      // --------------------------------------------------------
+      // TEMPORARY RENDER / NETWORK ERROR
+      // --------------------------------------------------------
+
+      if (
+        shouldRetryStatus(
+          response.status
+        ) &&
+        attempt < MAX_RETRIES
+      ) {
+        const retryDelay =
+          RETRY_DELAYS[attempt];
+
+        console.warn(
+          `[AI SERVICE] ${response.status} from ${path}. ` +
+            `Retrying in ${
+              retryDelay / 1000
+            } seconds... ` +
+            `(attempt ${
+              attempt + 1
+            }/${MAX_RETRIES})`
+        );
+
+        // Consume response body before retrying.
+        try {
+          await response.text();
+        } catch (error) {
+          // Ignore response parsing errors.
+        }
+
+        await sleep(retryDelay);
+
+        continue;
+      }
+
+      // --------------------------------------------------------
+      // NON-RETRYABLE ERROR
+      // --------------------------------------------------------
+
+      return response;
+    } catch (error) {
+      lastError = error;
+
+      const isAbortError =
+        error?.name ===
+        "AbortError";
+
+      const isNetworkError =
+        !error?.response;
+
+      if (
+        (isAbortError ||
+          isNetworkError) &&
+        attempt < MAX_RETRIES
+      ) {
+        const retryDelay =
+          RETRY_DELAYS[attempt];
+
+        console.warn(
+          `[AI SERVICE] ${
+            isAbortError
+              ? "Request timed out"
+              : "Network connection failed"
+          } for ${path}. ` +
+            `Retrying in ${
+              retryDelay / 1000
+            } seconds... ` +
+            `(attempt ${
+              attempt + 1
+            }/${MAX_RETRIES})`
+        );
+
+        await sleep(retryDelay);
+
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  throw new Error(
+    `Unable to connect to AI service at ${AI_SERVICE_URL}${path}. ` +
+      `The AI service may be starting up or temporarily unavailable. ` +
+      `${
+        lastError?.message ||
+        "Connection failed"
+      }`
+  );
+};
+
+// ============================================================
 // RESUME ANALYSIS
 // ============================================================
 
@@ -30,23 +204,26 @@ const analyzeResumeAgainstJD = async (
   resumeText,
   jobDescription
 ) => {
-  const response = await fetch(
-    `${AI_SERVICE_URL}/analyze`,
-    {
-      method: "POST",
+  const response =
+    await fetchAIService(
+      "/analyze",
+      () => ({
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
 
-      body: JSON.stringify({
-        resume_text: resumeText,
+        body: JSON.stringify({
+          resume_text:
+            resumeText,
 
-        job_description:
-          jobDescription || "",
-      }),
-    }
-  );
+          job_description:
+            jobDescription || "",
+        }),
+      })
+    );
 
   const data =
     await parseResponse(response);
@@ -70,23 +247,26 @@ const optimizeResume = async (
   resumeText,
   jobDescription
 ) => {
-  const response = await fetch(
-    `${AI_SERVICE_URL}/optimize`,
-    {
-      method: "POST",
+  const response =
+    await fetchAIService(
+      "/optimize",
+      () => ({
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
 
-      body: JSON.stringify({
-        resume_text: resumeText,
+        body: JSON.stringify({
+          resume_text:
+            resumeText,
 
-        job_description:
-          jobDescription || "",
-      }),
-    }
-  );
+          job_description:
+            jobDescription || "",
+        }),
+      })
+    );
 
   const data =
     await parseResponse(response);
@@ -113,36 +293,44 @@ const startInterview = async (
   resumeSourceId = null,
   jobDescriptionSourceId = null
 ) => {
-  const response = await fetch(
-    `${AI_SERVICE_URL}/interview/start`,
-    {
-      method: "POST",
+  const response =
+    await fetchAIService(
+      "/interview/start",
+      () => ({
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
 
-      body: JSON.stringify({
-        resume_text: resumeText,
+        body: JSON.stringify({
+          resume_text:
+            resumeText,
 
-        job_description:
-          jobDescription || "",
+          job_description:
+            jobDescription || "",
 
-        interview_type:
-          interviewType || "mixed",
+          interview_type:
+            interviewType ||
+            "mixed",
 
-        resume_source_id:
-          resumeSourceId
-            ? String(resumeSourceId)
-            : null,
+          resume_source_id:
+            resumeSourceId
+              ? String(
+                  resumeSourceId
+                )
+              : null,
 
-        job_description_source_id:
-          jobDescriptionSourceId
-            ? String(jobDescriptionSourceId)
-            : null,
-      }),
-    }
-  );
+          job_description_source_id:
+            jobDescriptionSourceId
+              ? String(
+                  jobDescriptionSourceId
+                )
+              : null,
+        }),
+      })
+    );
 
   const data =
     await parseResponse(response);
@@ -172,43 +360,52 @@ const evaluateInterviewAnswer = async (
   resumeSourceId = null,
   jobDescriptionSourceId = null
 ) => {
-  const response = await fetch(
-    `${AI_SERVICE_URL}/interview/answer`,
-    {
-      method: "POST",
+  const response =
+    await fetchAIService(
+      "/interview/answer",
+      () => ({
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
 
-      body: JSON.stringify({
-        resume_text: resumeText,
+        body: JSON.stringify({
+          resume_text:
+            resumeText,
 
-        job_description:
-          jobDescription || "",
+          job_description:
+            jobDescription || "",
 
-        interview_type:
-          interviewType || "mixed",
+          interview_type:
+            interviewType ||
+            "mixed",
 
-        question,
+          question,
 
-        answer,
+          answer,
 
-        previous_questions:
-          previousQuestions || [],
+          previous_questions:
+            previousQuestions ||
+            [],
 
-        resume_source_id:
-          resumeSourceId
-            ? String(resumeSourceId)
-            : null,
+          resume_source_id:
+            resumeSourceId
+              ? String(
+                  resumeSourceId
+                )
+              : null,
 
-        job_description_source_id:
-          jobDescriptionSourceId
-            ? String(jobDescriptionSourceId)
-            : null,
-      }),
-    }
-  );
+          job_description_source_id:
+            jobDescriptionSourceId
+              ? String(
+                  jobDescriptionSourceId
+                )
+              : null,
+        }),
+      })
+    );
 
   const data =
     await parseResponse(response);
@@ -229,65 +426,78 @@ const evaluateInterviewAnswer = async (
 // WITH ADAPTIVE DIFFICULTY
 // ============================================================
 
-const generateNextInterviewBatch = async (
-  resumeText,
-  jobDescription,
-  interviewType,
-  previousQuestions,
-  previousPerformance,
-  resumeSourceId = null,
-  jobDescriptionSourceId = null
-) => {
-  const response = await fetch(
-    `${AI_SERVICE_URL}/interview/next-batch`,
-    {
-      method: "POST",
+const generateNextInterviewBatch =
+  async (
+    resumeText,
+    jobDescription,
+    interviewType,
+    previousQuestions,
+    previousPerformance,
+    resumeSourceId = null,
+    jobDescriptionSourceId = null
+  ) => {
+    const response =
+      await fetchAIService(
+        "/interview/next-batch",
+        () => ({
+          method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
 
-      body: JSON.stringify({
-        resume_text: resumeText,
+          body: JSON.stringify({
+            resume_text:
+              resumeText,
 
-        job_description:
-          jobDescription || "",
+            job_description:
+              jobDescription || "",
 
-        interview_type:
-          interviewType || "mixed",
+            interview_type:
+              interviewType ||
+              "mixed",
 
-        previous_questions:
-          previousQuestions || [],
+            previous_questions:
+              previousQuestions ||
+              [],
 
-        previous_performance:
-          previousPerformance || [],
+            previous_performance:
+              previousPerformance ||
+              [],
 
-        resume_source_id:
-          resumeSourceId
-            ? String(resumeSourceId)
-            : null,
+            resume_source_id:
+              resumeSourceId
+                ? String(
+                    resumeSourceId
+                  )
+                : null,
 
-        job_description_source_id:
-          jobDescriptionSourceId
-            ? String(jobDescriptionSourceId)
-            : null,
-      }),
+            job_description_source_id:
+              jobDescriptionSourceId
+                ? String(
+                    jobDescriptionSourceId
+                  )
+                : null,
+          }),
+        })
+      );
+
+    const data =
+      await parseResponse(
+        response
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        data.detail ||
+          data.message ||
+          "AI next interview batch generation failed"
+      );
     }
-  );
 
-  const data =
-    await parseResponse(response);
-
-  if (!response.ok) {
-    throw new Error(
-      data.detail ||
-        data.message ||
-        "AI next interview batch generation failed"
-    );
-  }
-
-  return data;
-};
+    return data;
+  };
 
 // ============================================================
 // AUDIO -> TEXT TRANSCRIPTION
@@ -304,30 +514,37 @@ const transcribeAudio = async (
     );
   }
 
-  const formData = new FormData();
+  const response =
+    await fetchAIService(
+      "/transcribe",
+      () => {
+        const formData =
+          new FormData();
 
-  const audioBlob = new Blob(
-    [audioBuffer],
-    {
-      type:
-        mimeType || "audio/webm",
-    }
-  );
+        const audioBlob =
+          new Blob(
+            [audioBuffer],
+            {
+              type:
+                mimeType ||
+                "audio/webm",
+            }
+          );
 
-  formData.append(
-    "file",
-    audioBlob,
-    fileName || "answer.webm"
-  );
+        formData.append(
+          "file",
+          audioBlob,
+          fileName ||
+            "answer.webm"
+        );
 
-  const response = await fetch(
-    `${AI_SERVICE_URL}/transcribe`,
-    {
-      method: "POST",
+        return {
+          method: "POST",
 
-      body: formData,
-    }
-  );
+          body: formData,
+        };
+      }
+    );
 
   const data =
     await parseResponse(response);
@@ -370,24 +587,28 @@ const indexDocument = async (
     );
   }
 
-  const response = await fetch(
-    `${AI_SERVICE_URL}/rag/index`,
-    {
-      method: "POST",
+  const response =
+    await fetchAIService(
+      "/rag/index",
+      () => ({
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
 
-      body: JSON.stringify({
-        source_id: String(sourceId),
+        body: JSON.stringify({
+          source_id:
+            String(sourceId),
 
-        source_type: sourceType,
+          source_type:
+            sourceType,
 
-        text: text.trim(),
-      }),
-    }
-  );
+          text: text.trim(),
+        }),
+      })
+    );
 
   const data =
     await parseResponse(response);
@@ -423,29 +644,34 @@ const searchRag = async (
     sourceType = null,
   } = options;
 
-  const response = await fetch(
-    `${AI_SERVICE_URL}/rag/search`,
-    {
-      method: "POST",
+  const response =
+    await fetchAIService(
+      "/rag/search",
+      () => ({
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
 
-      body: JSON.stringify({
-        query: query.trim(),
+        body: JSON.stringify({
+          query:
+            query.trim(),
 
-        n_results: nResults,
+          n_results:
+            nResults,
 
-        source_id: sourceId
-          ? String(sourceId)
-          : null,
+          source_id:
+            sourceId
+              ? String(sourceId)
+              : null,
 
-        source_type:
-          sourceType || null,
-      }),
-    }
-  );
+          source_type:
+            sourceType || null,
+        }),
+      })
+    );
 
   const data =
     await parseResponse(response);
