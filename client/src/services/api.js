@@ -6,32 +6,128 @@ const request = async (
   endpoint,
   options = {}
 ) => {
-  const response = await fetch(
-    `${API_URL}${endpoint}`,
-    {
-      ...options,
+  let response;
 
-      headers: {
-        ...(options.body instanceof FormData
-          ? {}
-          : {
-              "Content-Type": "application/json",
-            }),
+  // ======================================================
+  // SEND REQUEST
+  // ======================================================
 
-        ...(options.headers || {}),
-      },
-    }
-  );
+  try {
+    response = await fetch(
+      `${API_URL}${endpoint}`,
+      {
+        ...options,
 
-  const data = await response.json();
+        headers: {
+          ...(options.body instanceof FormData
+            ? {}
+            : {
+                "Content-Type":
+                  "application/json",
+              }),
 
-  if (!response.ok) {
+          ...(options.headers || {}),
+        },
+      }
+    );
+  } catch (error) {
+    console.error(
+      "API request failed:",
+      error
+    );
+
     throw new Error(
-      data.message ||
-        data.detail ||
-        "Something went wrong"
+      "Unable to connect to the server. Please check your internet connection and try again."
     );
   }
+
+  // ======================================================
+  // READ RESPONSE SAFELY
+  // ======================================================
+
+  const contentType =
+    response.headers.get(
+      "content-type"
+    ) || "";
+
+  let data = null;
+
+  // ------------------------------------------------------
+  // JSON RESPONSE
+  // ------------------------------------------------------
+
+  if (
+    contentType.includes(
+      "application/json"
+    )
+  ) {
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error(
+        "Failed to parse JSON response:",
+        error
+      );
+
+      data = null;
+    }
+  }
+
+  // ------------------------------------------------------
+  // NON-JSON RESPONSE
+  // ------------------------------------------------------
+
+  else {
+    try {
+      const text =
+        await response.text();
+
+      data = {
+        message: text,
+      };
+    } catch (error) {
+      console.error(
+        "Failed to read response:",
+        error
+      );
+
+      data = null;
+    }
+  }
+
+  // ======================================================
+  // HANDLE HTTP ERRORS
+  // ======================================================
+
+  if (!response.ok) {
+    // ----------------------------------------------------
+    // RENDER / PROXY TEMPORARY ERRORS
+    // ----------------------------------------------------
+
+    if (
+      response.status === 502 ||
+      response.status === 503 ||
+      response.status === 504
+    ) {
+      throw new Error(
+        "The AI service is temporarily unavailable. Please try again in a moment."
+      );
+    }
+
+    // ----------------------------------------------------
+    // NORMAL API ERROR
+    // ----------------------------------------------------
+
+    throw new Error(
+      data?.message ||
+        data?.detail ||
+        "Something went wrong. Please try again."
+    );
+  }
+
+  // ======================================================
+  // SUCCESS
+  // ======================================================
 
   return data;
 };
