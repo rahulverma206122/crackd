@@ -1,0 +1,81 @@
+services:
+
+  # ==========================================================
+  # AI SERVICE - FASTAPI
+  # ==========================================================
+
+  ai-service:
+    build:
+      context: ./ai-service
+
+    container_name: crackd-ai
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - ./ai-service/.env
+
+    volumes:
+      - chroma_data:/app/chroma_data
+
+    restart: unless-stopped
+
+
+  # ==========================================================
+  # NODE BACKEND
+  # ==========================================================
+
+  server:
+    build:
+      context: ./server
+
+    container_name: crackd-server
+
+    ports:
+      - "5000:5000"
+
+    env_file:
+      - ./server/.env
+
+    environment:
+      AI_SERVICE_URL: http://ai-service:8000
+
+    depends_on:
+      - ai-service
+
+    volumes:
+      - ./server/uploads:/app/uploads
+
+    restart: unless-stopped
+
+
+  # ==========================================================
+  # REACT CLIENT
+  # ==========================================================
+
+  client:
+    build:
+      context: ./client
+
+      args:
+        VITE_API_URL: http://localhost:5000/api
+
+    container_name: crackd-client
+
+    ports:
+      - "5173:80"
+
+    depends_on:
+      - server
+
+    restart: unless-stopped
+
+
+# ==========================================================
+# VOLUMES
+# ==========================================================
+
+volumes:
+
+  chroma_data:
